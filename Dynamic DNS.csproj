@@ -5,8 +5,8 @@
     <RootNamespace>Dynamic_DNS</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Azure.Management.Dns.Fluent" Version="1.33.0" />
-    <PackageReference Include="Microsoft.Azure.Management.Fluent" Version="1.33.0" />
+    <PackageReference Include="Microsoft.Azure.Management.Dns" Version="3.0.1" />
+    <PackageReference Include="Microsoft.Azure.Services.AppAuthentication" Version="1.4.0" />
     <PackageReference Include="Microsoft.NET.Sdk.Functions" Version="3.0.3" />
   </ItemGroup>
   <ItemGroup>

@@ -6,13 +6,13 @@ using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
-using Microsoft.Azure.Management.ResourceManager.Fluent.Authentication;
-using Microsoft.Azure.Management.ResourceManager.Fluent;
-using Microsoft.Azure.Management.ResourceManager.Fluent.Core;
-using Microsoft.Azure.Management.Fluent;
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.Azure.Management.Dns.Models;
+using Microsoft.Azure.Management.Dns;
+using Microsoft.Azure.Services.AppAuthentication;
+using Microsoft.Rest;
+using System.Collections.Generic;
 
 namespace AzureDynamicDns
 {
@@ -23,19 +23,6 @@ namespace AzureDynamicDns
             [HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = null)] HttpRequest req,
             ILogger log)
         {
-            AzureCredentialsFactory factory = new AzureCredentialsFactory();
-            MSILoginInformation msi = new MSILoginInformation(MSIResourceType.AppService);
-            AzureCredentials credentials = factory.FromMSI(msi, AzureEnvironment.AzureGlobalCloud);
-
-            var authenticated = Azure
-                .Configure()
-                .WithLogLevel(HttpLoggingDelegatingHandler.Level.BodyAndHeaders)
-                .Authenticate(credentials);
-
-            var dnszone = await authenticated
-                .WithSubscription(GetSetting("DNS_SUBSCRIPTION_ID"))
-                .DnsZones.GetByResourceGroupAsync(GetSetting("DNS_RESOURCE_GROUP"), GetSetting("DNS_ZONE"));
-
             if (!IPAddress.TryParse(req.Query["ip"], out IPAddress ipAddress))
                 return new BadRequestObjectResult("Invalid IP Address");
 
@@ -43,17 +30,45 @@ namespace AzureDynamicDns
             if (string.IsNullOrEmpty(host))
                 return new BadRequestObjectResult("Invalid host");
 
+            var ttl = req.Query["ttl"];
+            long ttlSeconds;
+            if (string.IsNullOrEmpty(ttl))
+                ttlSeconds = 15 * 60; // default to 15 minutes
+            else if (!long.TryParse(ttl, out ttlSeconds))
+                return new BadRequestObjectResult($"Invalid ttl {ttl}");
+
+            var tokenprovider = new AzureServiceTokenProvider();
+            var token = await tokenprovider.GetAccessTokenAsync("https://management.azure.com/");
+            var dnsClient = new DnsManagementClient(new TokenCredentials(token)) {
+                SubscriptionId = GetSetting("DNS_SUBSCRIPTION_ID")
+            };
+
+            var recordSet = new RecordSet();
+            recordSet.TTL = ttlSeconds;
+
+            RecordType recordType;
             switch (ipAddress.AddressFamily)
             {
                 case AddressFamily.InterNetwork:
-                    await dnszone.Update().DefineARecordSet(host).WithIPv4Address(ipAddress.ToString()).Attach().ApplyAsync();
+                    recordType = RecordType.A;
+                    recordSet.ARecords = new List<ARecord>();
+                    recordSet.ARecords.Add(new ARecord(ipAddress.ToString()));
                     break;
+
                 case AddressFamily.InterNetworkV6:
-                    await dnszone.Update().DefineAaaaRecordSet(host).WithIPv6Address(ipAddress.ToString()).Attach().ApplyAsync();
+                    recordType = RecordType.AAAA;
+                    recordSet.AaaaRecords = new List<AaaaRecord>();
+                    recordSet.AaaaRecords.Add(new AaaaRecord(ipAddress.ToString()));
                     break;
+
                 default:
                     return new BadRequestObjectResult($"Unknown AddressFamily {ipAddress.AddressFamily}");
             }
+
+            await dnsClient.RecordSets.CreateOrUpdateAsync(
+                GetSetting("DNS_RESOURCE_GROUP"),
+                GetSetting("DNS_ZONE"),
+                host, recordType, recordSet);
 
             var message = $"Successfully updated {host} to {ipAddress}";
             log.LogInformation(message);
